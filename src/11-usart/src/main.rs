@@ -2,9 +2,10 @@
 #![no_std]
 
 use core::fmt::{self, Write};
+use heapless::Vec;
 
 #[allow(unused_imports)]
-use aux11::{entry, iprint, iprintln, usart1};
+use aux11::{entry, iprint, iprintln, usart1, bkpt};
 
 macro_rules! uprint {
     ($serial:expr, $($arg:tt)*) => {
@@ -14,18 +15,18 @@ macro_rules! uprint {
 
 macro_rules! uprintln {
     ($serial:expr, $fmt:expr) => {
-        uprint!($serial, concat!($fmt, "\n"))
+        uprint!($serial, concat!($fmt, "\r\n"))
     };
     ($serial:expr, $fmt:expr, $($arg:tt)*) => {
-        uprint!($serial, concat!($fmt, "\n"), $($arg)*)
+        uprint!($serial, concat!($fmt, "\r\n"), $($arg)*)
     };
 }
 
-struct SerialPort {
-    usart1: &'static mut usart1::RegisterBlock,
+struct SerialPort<'a> {
+    usart1: &'a mut usart1::RegisterBlock,
 }
 
-impl fmt::Write for SerialPort {
+impl<'a> fmt::Write for SerialPort<'a> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for c in s.as_bytes() {
             while self.usart1.isr.read().txe().bit_is_clear() {}
@@ -37,19 +38,51 @@ impl fmt::Write for SerialPort {
     }
 }
 
+// #[entry]
+// fn main() -> ! {
+//     let (usart1, _mono_timer, _itm) = aux11::init();
+
+//     let mut serial = SerialPort { usart1 };
+
+//     uprintln!(serial, "The answer is {}", 40 + 2);
+
+//     loop {}
+// }
+
 #[entry]
 fn main() -> ! {
     let (usart1, _mono_timer, _itm) = aux11::init();
+    let mut buffer = Vec::<u8, 32>::new();
 
-    let mut serial = SerialPort { usart1 };
+    loop {
+        buffer.clear();
+        loop {
+            // Wait until there's data available
+            while usart1.isr.read().rxne().bit_is_clear() {}
 
-    uprintln!(serial, "The answer is {}", 40 + 2);
+            // Retrieve the data
+            match usart1.rdr.read().rdr().bits() as u8 {
+                b'\r' => {
+                    for byte in buffer.iter().rev() {
+                        while usart1.isr.read().txe().bit_is_clear() {}
+                        usart1
+                            .tdr
+                            .write(|w| w.tdr().bits(u16::from(*byte)));
+                    }
 
-    loop {}
+                    let mut serial = SerialPort { usart1 };
+                    uprintln!(serial, "");
+                    break;
+                }
+                byte => if buffer.push(byte).is_err() {
+                    let mut serial = SerialPort { usart1 };
+                    uprintln!(serial, "error: buffer is full");
+                    break;
+                }
+            }
+        }
+    }
 }
-
-// #[allow(unused_imports)]
-// use aux11::{entry, iprint, iprintln};
 
 // #[entry]
 // fn main() -> ! {
